@@ -70,6 +70,59 @@ jobs:
                 name: sm64coopdx-steamos
                 path: ./build/us_pc/sm64coopdx_SteamOS.zip
 
+    build-rpi:
+        if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[build]') }}
+        runs-on: ubuntu-22.04
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Install cross-compilation toolchain & dependencies
+              run: |
+                sudo apt update
+                sudo apt install -y \
+                  build-essential git python3 zip \
+                  gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
+                  pkg-config
+
+            - name: Install ARM sysroot libraries via QEMU multiarch
+              run: |
+                sudo dpkg --add-architecture armhf
+                sudo apt update
+                sudo apt install -y \
+                  libglew-dev:armhf \
+                  libsdl2-dev:armhf \
+                  zlib1g-dev:armhf \
+                  libcurl4-openssl-dev:armhf \
+                  libgles2-mesa-dev:armhf \
+                  libdrm-dev:armhf
+
+            - name: Build the game for Raspberry Pi (ARM32)
+              run: |
+                make -j$(nproc) \
+                  TARGET_RPI=1 \
+                  CROSS_COMPILE=arm-linux-gnueabihf- \
+                  CC=arm-linux-gnueabihf-gcc \
+                  CXX=arm-linux-gnueabihf-g++ \
+                  PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig
+
+            - name: Generate hash (host-side, on the binary)
+              run: |
+                cd tools
+                g++ -std=c++17 -o hash_file hash_file.cpp
+                echo "::notice ::$(./hash_file ../build/us_pc/sm64coopdx)"
+
+            - name: Zip the game
+              run: |
+                cd ./build/us_pc
+                zip -r sm64coopdx_RaspberryPi.zip dynos lang mods palettes libdiscord_game_sdk.so sm64coopdx
+
+            - name: Upload artifact
+              uses: actions/upload-artifact@v4
+              with:
+                name: sm64coopdx-raspberrypi
+                path: ./build/us_pc/sm64coopdx_RaspberryPi.zip
+
     build-windows-opengl:
         if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[build]') }}
         runs-on: windows-latest
