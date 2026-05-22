@@ -4,8 +4,6 @@ on:
     workflow_dispatch:
     push:
         branches: [ main, dev ]
-        # Ne se déclenche que si le message de commit contient [rpi]
-        # Pour forcer sans tag, utiliser workflow_dispatch
         paths-ignore:
             - '**.md'
             - 'docs/**'
@@ -37,10 +35,14 @@ jobs:
                 deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse
                 EOF
                 # Restreindre les sources existantes à amd64 pour éviter les conflits
-                sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+                if [ -f /etc/apt/sources.list ]; then
+                  sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+                fi
                 sudo apt update
 
             - name: Install ARM sysroot libraries (armhf)
+              env:
+                PKG_CONFIG_LIBDIR: /usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig
               run: |
                 sudo apt install -y \
                   libglew-dev:armhf \
@@ -51,24 +53,41 @@ jobs:
                   libdrm-dev:armhf
 
             - name: Build for Raspberry Pi (ARM32)
+              env:
+                PKG_CONFIG_LIBDIR: /usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig
+                PKG_CONFIG_PATH: /usr/lib/arm-linux-gnueabihf/pkgconfig
               run: |
                 make -j$(nproc) \
                   TARGET_RPI=1 \
-                  CROSS_COMPILE=arm-linux-gnueabihf- \
+                  CROSS=arm-linux-gnueabihf- \
                   CC=arm-linux-gnueabihf-gcc \
-                  CXX=arm-linux-gnueabihf-g++ \
-                  PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig
+                  CXX=arm-linux-gnueabihf-g++
+
+            - name: Inspect build output
+              run: |
+                find build -maxdepth 3 -type f | sort | tail -n 200
+                ls -lah build/us_pc || true
+
+            - name: Detect launch binary
+              run: |
+                BIN=$(find build/us_pc -maxdepth 1 -type f \( -name 'sm64coopdx.arm' -o -name 'sm64coopdx' -o -name 'sm64coopdx*' \) | sort | head -n 1)
+                test -n "$BIN" || (echo "ERROR: no sm64coopdx binary found in build/us_pc" && exit 1)
+                echo "BIN=$BIN" >> "$GITHUB_ENV"
+                echo "BIN_NAME=$(basename "$BIN")" >> "$GITHUB_ENV"
+                file "$BIN"
 
             - name: Generate hash
               run: |
                 cd tools
                 g++ -std=c++17 -o hash_file hash_file.cpp
-                echo "::notice ::$(./hash_file ../build/us_pc/sm64coopdx)"
+                echo "::notice ::$(./hash_file ../$BIN)"
 
             - name: Zip the game
               run: |
-                cd ./build/us_pc
-                zip -r sm64coopdx_RaspberryPi.zip dynos lang mods palettes libdiscord_game_sdk.so sm64coopdx
+                cd build/us_pc
+                ZIP_ITEMS="dynos lang mods palettes $BIN_NAME"
+                [ -f libdiscord_game_sdk.so ] && ZIP_ITEMS="$ZIP_ITEMS libdiscord_game_sdk.so"
+                zip -r sm64coopdx_RaspberryPi.zip $ZIP_ITEMS
 
             - name: Upload artifact
               uses: actions/upload-artifact@v4
