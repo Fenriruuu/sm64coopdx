@@ -27,22 +27,17 @@ jobs:
             - name: Add armhf architecture with ports.ubuntu.com source
               run: |
                 sudo dpkg --add-architecture armhf
-                # Les runners Azure ne servent pas armhf via azure.archive.ubuntu.com
-                # On pointe vers ports.ubuntu.com (miroir officiel ARM d'Ubuntu)
                 sudo tee /etc/apt/sources.list.d/armhf-ports.list > /dev/null <<'EOF'
                 deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse
                 deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse
                 deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse
                 EOF
-                # Restreindre les sources existantes à amd64 pour éviter les conflits
                 if [ -f /etc/apt/sources.list ]; then
                   sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
                 fi
                 sudo apt update
 
             - name: Install ARM sysroot libraries (armhf)
-              env:
-                PKG_CONFIG_LIBDIR: /usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig
               run: |
                 sudo apt install -y \
                   libglew-dev:armhf \
@@ -51,6 +46,21 @@ jobs:
                   libcurl4-openssl-dev:armhf \
                   libgles2-mesa-dev:armhf \
                   libdrm-dev:armhf
+
+            - name: Create arm-linux-gnueabihf-sdl2-config wrapper
+              run: |
+                # Le Makefile prefixe sdl2-config avec $(CROSS), il cherche donc
+                # arm-linux-gnueabihf-sdl2-config qui n'existe pas pour les libs croises.
+                # On cree un wrapper qui appelle pkg-config avec le bon sysroot armhf.
+                sudo tee /usr/local/bin/arm-linux-gnueabihf-sdl2-config > /dev/null <<'WRAPPER'
+                #!/bin/sh
+                export PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig
+                export PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig
+                pkg-config "$@" sdl2
+                WRAPPER
+                sudo chmod +x /usr/local/bin/arm-linux-gnueabihf-sdl2-config
+                # Verification
+                arm-linux-gnueabihf-sdl2-config --cflags --libs
 
             - name: Build for Raspberry Pi (ARM32)
               env:
