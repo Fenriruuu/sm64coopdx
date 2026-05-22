@@ -49,9 +49,6 @@ jobs:
 
             - name: Create arm-linux-gnueabihf-sdl2-config wrapper
               run: |
-                # Le Makefile prefixe sdl2-config avec $(CROSS), il cherche donc
-                # arm-linux-gnueabihf-sdl2-config qui n'existe pas pour les libs croises.
-                # On cree un wrapper qui appelle pkg-config avec le bon sysroot armhf.
                 sudo tee /usr/local/bin/arm-linux-gnueabihf-sdl2-config > /dev/null <<'WRAPPER'
                 #!/bin/sh
                 export PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig
@@ -59,19 +56,30 @@ jobs:
                 pkg-config "$@" sdl2
                 WRAPPER
                 sudo chmod +x /usr/local/bin/arm-linux-gnueabihf-sdl2-config
-                # Verification
                 arm-linux-gnueabihf-sdl2-config --cflags --libs
 
-            - name: Build for Raspberry Pi (ARM32)
+            - name: Build for Raspberry Pi 3 (Cortex-A53, ARMv8-A 32-bit)
               env:
                 PKG_CONFIG_LIBDIR: /usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig
                 PKG_CONFIG_PATH: /usr/lib/arm-linux-gnueabihf/pkgconfig
+                # RPi3 Model B v1.2 = Cortex-A53 = ARMv8-A en mode 32-bit
+                # -march=armv8-a+simd  : active les extensions SIMD/NEON du Cortex-A53
+                # -mtune=cortex-a53    : optimise le scheduling pour ce coeur specifique
+                # -mfpu=neon-fp-armv8  : active le FPU ARMv8 avec NEON (evite les segfaults ABI)
+                # -mfloat-abi=hard     : ABI hard-float (requis pour les libs armhf)
+                # -O3                  : optimisation maximale
+                # -ffast-math          : optimisations math agressives (ok pour un jeu)
+                # -pipe                : reduit les I/O disque pendant la compilation
+                EXTRA_CFLAGS: "-march=armv8-a+simd -mtune=cortex-a53 -mfpu=neon-fp-armv8 -mfloat-abi=hard -O3 -ffast-math -pipe"
+                EXTRA_CXXFLAGS: "-march=armv8-a+simd -mtune=cortex-a53 -mfpu=neon-fp-armv8 -mfloat-abi=hard -O3 -ffast-math -pipe"
               run: |
                 make -j$(nproc) \
                   TARGET_RPI=1 \
                   CROSS=arm-linux-gnueabihf- \
                   CC=arm-linux-gnueabihf-gcc \
-                  CXX=arm-linux-gnueabihf-g++
+                  CXX=arm-linux-gnueabihf-g++ \
+                  CFLAGS="$EXTRA_CFLAGS" \
+                  CXXFLAGS="$EXTRA_CXXFLAGS"
 
             - name: Inspect build output
               run: |
