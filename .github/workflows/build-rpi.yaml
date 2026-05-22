@@ -40,7 +40,6 @@ jobs:
             - name: Install ARM sysroot libraries (armhf)
               run: |
                 sudo apt install -y \
-                  libglew-dev:armhf \
                   libsdl2-dev:armhf \
                   zlib1g-dev:armhf \
                   libcurl4-openssl-dev:armhf \
@@ -69,7 +68,6 @@ jobs:
             #   -O2                    : optimisation stable (O3+ffast-math cause UB sur code SM64)
             #   -fno-fast-math         : desactive les optimisations flottantes qui brisent le jeu
             #   -pipe                  : reduit les I/O disque pendant la compilation
-            # CFLAGS est exporte en env (pas passe a make=) pour ne pas ecraser les -I du Makefile
             # ---------------------------------------------------------------
             - name: Build RELEASE for Raspberry Pi 3 (ARMv7+NEON, safe flags)
               env:
@@ -85,33 +83,12 @@ jobs:
                   CC=arm-linux-gnueabihf-gcc \
                   CXX=arm-linux-gnueabihf-g++
 
-            # ---------------------------------------------------------------
-            # BUILD DEBUG (symboles, pas de strip, pas de ffast-math)
-            # Permet gdb backtrace complet sur la RPi pour diagnostiquer le crash
-            # ---------------------------------------------------------------
-            - name: Build DEBUG for Raspberry Pi 3 (symbols + no strip)
-              env:
-                PKG_CONFIG_LIBDIR: /usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig
-                PKG_CONFIG_PATH: /usr/lib/arm-linux-gnueabihf/pkgconfig
-                CFLAGS: "-march=armv7-a -mtune=cortex-a53 -mfpu=neon-vfpv4 -mfloat-abi=hard -O1 -g3 -fno-fast-math -fno-omit-frame-pointer -pipe"
-                CXXFLAGS: "-march=armv7-a -mtune=cortex-a53 -mfpu=neon-vfpv4 -mfloat-abi=hard -O1 -g3 -fno-fast-math -fno-omit-frame-pointer -pipe"
-              run: |
-                make clean
-                make -j$(nproc) \
-                  TARGET_RPI=1 \
-                  CROSS=arm-linux-gnueabihf- \
-                  CC=arm-linux-gnueabihf-gcc \
-                  CXX=arm-linux-gnueabihf-g++
-                # Copie le binaire debug avant qu'un strip eventuel ne l'ecrase
-                cp build/us_pc/sm64coopdx.arm build/us_pc/sm64coopdx_debug.arm || \
-                  cp build/us_pc/sm64coopdx build/us_pc/sm64coopdx_debug || true
-
-            - name: Inspect build output
+            - name: Inspect build output (RELEASE)
               run: |
                 find build -maxdepth 3 -type f | sort | tail -n 200
                 ls -lah build/us_pc || true
 
-            - name: Detect launch binary
+            - name: Detect RELEASE binary
               run: |
                 BIN=$(find build/us_pc -maxdepth 1 -type f \( -name 'sm64coopdx.arm' -o -name 'sm64coopdx' -o -name 'sm64coopdx*' \) \
                       ! -name '*_debug*' | sort | head -n 1)
@@ -119,9 +96,6 @@ jobs:
                 echo "BIN=$BIN" >> "$GITHUB_ENV"
                 echo "BIN_NAME=$(basename "$BIN")" >> "$GITHUB_ENV"
                 file "$BIN"
-                DEBUG_BIN=$(find build/us_pc -maxdepth 1 -type f -name '*_debug*' | sort | head -n 1)
-                echo "DEBUG_BIN=$DEBUG_BIN" >> "$GITHUB_ENV"
-                echo "DEBUG_BIN_NAME=$(basename "$DEBUG_BIN")" >> "$GITHUB_ENV"
 
             - name: Generate hash
               run: |
@@ -136,19 +110,52 @@ jobs:
                 [ -f libdiscord_game_sdk.so ] && ZIP_ITEMS="$ZIP_ITEMS libdiscord_game_sdk.so"
                 zip -r sm64coopdx_RaspberryPi_release.zip $ZIP_ITEMS
 
-            - name: Zip DEBUG artifact (binaire seul + lang, sans mods/dynos pour tests propres)
-              run: |
-                cd build/us_pc
-                ZIP_DEBUG="lang $DEBUG_BIN_NAME"
-                [ -f libdiscord_game_sdk.so ] && ZIP_DEBUG="$ZIP_DEBUG libdiscord_game_sdk.so"
-                zip -r sm64coopdx_RaspberryPi_debug.zip $ZIP_DEBUG
-
             - name: Upload RELEASE artifact
               uses: actions/upload-artifact@v4
               with:
                 name: sm64coopdx-raspberrypi-release
                 retention-days: 14
                 path: ./build/us_pc/sm64coopdx_RaspberryPi_release.zip
+
+            # ---------------------------------------------------------------
+            # BUILD DEBUG (symboles, pas de strip, pas de ffast-math)
+            # make clean ICI seulement, APRES que le zip release est upload
+            # ---------------------------------------------------------------
+            - name: Build DEBUG for Raspberry Pi 3 (symbols + no strip)
+              env:
+                PKG_CONFIG_LIBDIR: /usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig
+                PKG_CONFIG_PATH: /usr/lib/arm-linux-gnueabihf/pkgconfig
+                CFLAGS: "-march=armv7-a -mtune=cortex-a53 -mfpu=neon-vfpv4 -mfloat-abi=hard -O1 -g3 -fno-fast-math -fno-omit-frame-pointer -pipe"
+                CXXFLAGS: "-march=armv7-a -mtune=cortex-a53 -mfpu=neon-vfpv4 -mfloat-abi=hard -O1 -g3 -fno-fast-math -fno-omit-frame-pointer -pipe"
+              run: |
+                make clean
+                make -j$(nproc) \
+                  TARGET_RPI=1 \
+                  CROSS=arm-linux-gnueabihf- \
+                  CC=arm-linux-gnueabihf-gcc \
+                  CXX=arm-linux-gnueabihf-g++
+
+            - name: Copy DEBUG binary
+              run: |
+                # Le Makefile sort le binaire sans extension .arm sur TARGET_RPI=1
+                # On cherche le binaire principal et on le copie avec suffixe _debug
+                BIN_DEBUG=$(find build/us_pc -maxdepth 1 -type f \( -name 'sm64coopdx' -o -name 'sm64coopdx.arm' \) | sort | head -n 1)
+                test -n "$BIN_DEBUG" || (echo "ERROR: no debug binary found" && exit 1)
+                EXT="${BIN_DEBUG##*.}"
+                if [ "$EXT" = "arm" ]; then
+                  cp "$BIN_DEBUG" build/us_pc/sm64coopdx_debug.arm
+                  echo "DEBUG_BIN_NAME=sm64coopdx_debug.arm" >> "$GITHUB_ENV"
+                else
+                  cp "$BIN_DEBUG" build/us_pc/sm64coopdx_debug
+                  echo "DEBUG_BIN_NAME=sm64coopdx_debug" >> "$GITHUB_ENV"
+                fi
+
+            - name: Zip DEBUG artifact
+              run: |
+                cd build/us_pc
+                ZIP_DEBUG="lang $DEBUG_BIN_NAME"
+                [ -f libdiscord_game_sdk.so ] && ZIP_DEBUG="$ZIP_DEBUG libdiscord_game_sdk.so"
+                zip -r sm64coopdx_RaspberryPi_debug.zip $ZIP_DEBUG
 
             - name: Upload DEBUG artifact
               uses: actions/upload-artifact@v4
