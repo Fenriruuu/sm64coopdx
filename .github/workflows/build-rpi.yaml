@@ -58,23 +58,53 @@ jobs:
                 sudo chmod +x /usr/local/bin/arm-linux-gnueabihf-sdl2-config
                 arm-linux-gnueabihf-sdl2-config --cflags --libs
 
-            - name: Build for Raspberry Pi 3 (Cortex-A53, ARMv8-A 32-bit)
+            # ---------------------------------------------------------------
+            # BUILD RELEASE
+            # Flags surs pour RPi3 Cortex-A53 en mode 32-bit armhf :
+            #   -march=armv7-a         : compatible binaire armhf standard (evite mismatch ABI)
+            #   -mtune=cortex-a53      : scheduling optimise pour le vrai CPU
+            #   -mfpu=neon-vfpv4       : FPU NEON+VFPv4 present sur Cortex-A53 (pas neon-fp-armv8
+            #                           qui peut generer des instructions non supportees en 32-bit)
+            #   -mfloat-abi=hard       : ABI hard-float requise pour les libs armhf
+            #   -O2                    : optimisation stable (O3+ffast-math cause UB sur code SM64)
+            #   -fno-fast-math         : desactive les optimisations flottantes qui brisent le jeu
+            #   -pipe                  : reduit les I/O disque pendant la compilation
+            # CFLAGS est exporte en env (pas passe a make=) pour ne pas ecraser les -I du Makefile
+            # ---------------------------------------------------------------
+            - name: Build RELEASE for Raspberry Pi 3 (ARMv7+NEON, safe flags)
               env:
                 PKG_CONFIG_LIBDIR: /usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig
                 PKG_CONFIG_PATH: /usr/lib/arm-linux-gnueabihf/pkgconfig
-                # ATTENTION : on utilise CFLAGS_RPI via la variable d'env CFLAGS du shell.
-                # Ne pas passer CFLAGS= a make directement : ca ecrase les -I include/ du Makefile
-                # et cause "ultra64.h: No such file or directory".
-                # La bonne methode : exporter CFLAGS dans l'env shell, make l'herite via $(CFLAGS).
-                # RPi3 B v1.2 = Cortex-A53 (ARMv8-A en mode 32-bit armhf)
-                CFLAGS: "-march=armv8-a+simd -mtune=cortex-a53 -mfpu=neon-fp-armv8 -mfloat-abi=hard -O3 -ffast-math -pipe"
-                CXXFLAGS: "-march=armv8-a+simd -mtune=cortex-a53 -mfpu=neon-fp-armv8 -mfloat-abi=hard -O3 -ffast-math -pipe"
+                CFLAGS: "-march=armv7-a -mtune=cortex-a53 -mfpu=neon-vfpv4 -mfloat-abi=hard -O2 -fno-fast-math -pipe"
+                CXXFLAGS: "-march=armv7-a -mtune=cortex-a53 -mfpu=neon-vfpv4 -mfloat-abi=hard -O2 -fno-fast-math -pipe"
               run: |
+                make clean
                 make -j$(nproc) \
                   TARGET_RPI=1 \
                   CROSS=arm-linux-gnueabihf- \
                   CC=arm-linux-gnueabihf-gcc \
                   CXX=arm-linux-gnueabihf-g++
+
+            # ---------------------------------------------------------------
+            # BUILD DEBUG (symboles, pas de strip, pas de ffast-math)
+            # Permet gdb backtrace complet sur la RPi pour diagnostiquer le crash
+            # ---------------------------------------------------------------
+            - name: Build DEBUG for Raspberry Pi 3 (symbols + no strip)
+              env:
+                PKG_CONFIG_LIBDIR: /usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig
+                PKG_CONFIG_PATH: /usr/lib/arm-linux-gnueabihf/pkgconfig
+                CFLAGS: "-march=armv7-a -mtune=cortex-a53 -mfpu=neon-vfpv4 -mfloat-abi=hard -O1 -g3 -fno-fast-math -fno-omit-frame-pointer -pipe"
+                CXXFLAGS: "-march=armv7-a -mtune=cortex-a53 -mfpu=neon-vfpv4 -mfloat-abi=hard -O1 -g3 -fno-fast-math -fno-omit-frame-pointer -pipe"
+              run: |
+                make clean
+                make -j$(nproc) \
+                  TARGET_RPI=1 \
+                  CROSS=arm-linux-gnueabihf- \
+                  CC=arm-linux-gnueabihf-gcc \
+                  CXX=arm-linux-gnueabihf-g++
+                # Copie le binaire debug avant qu'un strip eventuel ne l'ecrase
+                cp build/us_pc/sm64coopdx.arm build/us_pc/sm64coopdx_debug.arm || \
+                  cp build/us_pc/sm64coopdx build/us_pc/sm64coopdx_debug || true
 
             - name: Inspect build output
               run: |
@@ -83,11 +113,15 @@ jobs:
 
             - name: Detect launch binary
               run: |
-                BIN=$(find build/us_pc -maxdepth 1 -type f \( -name 'sm64coopdx.arm' -o -name 'sm64coopdx' -o -name 'sm64coopdx*' \) | sort | head -n 1)
+                BIN=$(find build/us_pc -maxdepth 1 -type f \( -name 'sm64coopdx.arm' -o -name 'sm64coopdx' -o -name 'sm64coopdx*' \) \
+                      ! -name '*_debug*' | sort | head -n 1)
                 test -n "$BIN" || (echo "ERROR: no sm64coopdx binary found in build/us_pc" && exit 1)
                 echo "BIN=$BIN" >> "$GITHUB_ENV"
                 echo "BIN_NAME=$(basename "$BIN")" >> "$GITHUB_ENV"
                 file "$BIN"
+                DEBUG_BIN=$(find build/us_pc -maxdepth 1 -type f -name '*_debug*' | sort | head -n 1)
+                echo "DEBUG_BIN=$DEBUG_BIN" >> "$GITHUB_ENV"
+                echo "DEBUG_BIN_NAME=$(basename "$DEBUG_BIN")" >> "$GITHUB_ENV"
 
             - name: Generate hash
               run: |
@@ -95,16 +129,30 @@ jobs:
                 g++ -std=c++17 -o hash_file hash_file.cpp
                 echo "::notice ::$(./hash_file ../$BIN)"
 
-            - name: Zip the game
+            - name: Zip RELEASE artifact
               run: |
                 cd build/us_pc
                 ZIP_ITEMS="dynos lang mods palettes $BIN_NAME"
                 [ -f libdiscord_game_sdk.so ] && ZIP_ITEMS="$ZIP_ITEMS libdiscord_game_sdk.so"
-                zip -r sm64coopdx_RaspberryPi.zip $ZIP_ITEMS
+                zip -r sm64coopdx_RaspberryPi_release.zip $ZIP_ITEMS
 
-            - name: Upload artifact
+            - name: Zip DEBUG artifact (binaire seul + lang, sans mods/dynos pour tests propres)
+              run: |
+                cd build/us_pc
+                ZIP_DEBUG="lang $DEBUG_BIN_NAME"
+                [ -f libdiscord_game_sdk.so ] && ZIP_DEBUG="$ZIP_DEBUG libdiscord_game_sdk.so"
+                zip -r sm64coopdx_RaspberryPi_debug.zip $ZIP_DEBUG
+
+            - name: Upload RELEASE artifact
               uses: actions/upload-artifact@v4
               with:
-                name: sm64coopdx-raspberrypi
+                name: sm64coopdx-raspberrypi-release
                 retention-days: 14
-                path: ./build/us_pc/sm64coopdx_RaspberryPi.zip
+                path: ./build/us_pc/sm64coopdx_RaspberryPi_release.zip
+
+            - name: Upload DEBUG artifact
+              uses: actions/upload-artifact@v4
+              with:
+                name: sm64coopdx-raspberrypi-debug
+                retention-days: 14
+                path: ./build/us_pc/sm64coopdx_RaspberryPi_debug.zip
