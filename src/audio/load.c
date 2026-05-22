@@ -1303,8 +1303,8 @@ struct AudioBank *bank_load_immediate(s32 bankId, s32 arg1) {
     }
 
     audio_dma_copy_immediate((uintptr_t) ctlData, buf, 0x10);
-    numInstruments = buf[0];
-    numDrums = buf[1];
+    numInstruments = __builtin_bswap32(buf[0]);
+    numDrums = __builtin_bswap32(buf[1]);
     audio_dma_copy_immediate((uintptr_t)(ctlData + 0x10), ret, alloc);
     patch_audio_bank(ret, gAlTbl->seqArray[bankId].offset, numInstruments, numDrums);
     gCtlEntries[bankId].numInstruments = (u8) numInstruments;
